@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StopAIFake Front</title>
+</head>
+<body>
+  <h1>LiveKit StopAIFake</h1>
+  <div id="audio-container"></div>
+
+  <script type="module">
+    import { connect, createLocalAudioTrack } from 'https://cdn.jsdelivr.net/npm/livekit-client@1.7.4/dist/livekit-client.mjs';
+
+    async function start() {
+      try {
+        // Получаем токен с вашего сервера
+        const resp = await fetch("https://liveki-tserver.vercel.app/api/token?room=StopAIFake", { method: "POST" });
+        const data = await resp.json();
+        const token = data.token;
+
+        const url = "wss://stopaifake-07gwd6vp.livekit.cloud";
+
+        // Подключаемся к комнате без автопубликации
+        const room = await connect(url, token, { audio: false, video: false });
+
+        // Захват микрофона и публикация
+        const localAudio = await createLocalAudioTrack();
+        await room.localParticipant.publishTrack(localAudio);
+
+        // Воспроизведение аудио участников (агента)
+        room.on('trackSubscribed', (track, participant) => {
+          if(track.kind === 'audio') {
+            const audioEl = track.attach();
+            audioEl.autoplay = true;
+            audioEl.playsInline = true;
+            document.getElementById('audio-container').appendChild(audioEl);
+            console.log('Audio subscribed from', participant.identity);
+          }
+        });
+
+        room.on('participantConnected', p => console.log('Participant connected:', p.identity));
+        room.on('participantDisconnected', p => console.log('Participant disconnected:', p.identity));
+        room.on('disconnected', () => console.log('Disconnected from room'));
+
+      } catch (e) {
+        console.error('Error starting LiveKit connection:', e);
+        alert('Ошибка запуска: ' + e.message);
+      }
+    }
+
+    start();
+  </script>
+</body>
+</html>
