@@ -268,118 +268,98 @@
       updateStatus(`<span class="loading"></span>${text}`);
     }
     
+    // --- НАЧАЛО ИСПРАВЛЕННОЙ ФУНКЦИИ ---
     async function connectToRoom(token, roomName) {
       const wsUrl = "wss://stopaifake-07gwd6vp.livekit.cloud";
       
       showLoading("Подключение к комнате...");
-      addDebugLog("Создание комнаты...");
+      addDebugLog("Создание объекта Room...");
       
       const room = new Room({
         adaptiveStream: true,
         dynacast: true,
-        videoCaptureDefaults: {
-          resolution: {
-            width: 640,
-            height: 480,
-            frameRate: 30,
-          }
-        }
       });
       
       currentRoom = room;
-      
-// --- НАЧАЛО ПЕРЕДЕЛАННОГО БЛОКА ---
 
-      // Обработчики событий ПЕРЕД подключением
-      
-      // НОВЫЙ ОБРАБОТЧИК: Следим за качеством соединения (для диагностики "радиопомех")
-      room.on(RoomEvent.ParticipantConnected, participant => {
-        addDebugLog(`✅ Участник подключился: ${participant.identity}`);
-        
-        // Устанавливаем слушатель качества связи для этого участника
+      // --- ОБРАБОТЧИКИ СОБЫТИЙ ---
+
+      // Функция для настройки слушателей для ОДНОГО участника
+      const setupParticipantListeners = (participant) => {
+        addDebugLog(`[LISTENER SETUP] Настройка слушателей для: ${participant.identity}`);
         participant.on('connectionqualitychanged', (quality) => {
-          // Выводим в лог каждое изменение качества связи
           const qualityMsg = `📡 Качество связи для ${participant.identity}: ${quality.toUpperCase()}`;
           addDebugLog(qualityMsg);
         });
+      };
 
-        if (participant.identity.includes('agent')) {
-          updateStatus(`🤖 Агент в комнате: ${participant.identity}`, 'success');
-        }
+      // 1. Для НОВЫХ участников, которые подключаются ПОСЛЕ вас
+      room.on(RoomEvent.ParticipantConnected, (participant) => {
+        addDebugLog(`[EVENT] ✅ Участник подключился: ${participant.identity}`);
+        setupParticipantListeners(participant);
       });
-
-      // СУЩЕСТВУЮЩИЙ ОБРАБОТЧИК: Подписка на медиа-треки
+      
+      // 2. Подписка на треки
       room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-        addDebugLog(`🎧 Подписка на трек: ${track.kind} от ${participant.identity}`);
-        
+        addDebugLog(`[EVENT] 🎧 Подписка на трек: ${track.kind} от ${participant.identity}`);
         if (track.kind === 'audio') {
           addDebugLog("Создание и прикрепление аудио элемента...");
-          try {
-            const audioEl = track.attach(); // attach() создает и возвращает <audio> элемент
-            audioContainer.appendChild(audioEl);
-            audioContainer.classList.add('active');
-            updateStatus(`🔊 Слышу агента: ${participant.identity}`, 'success');
-            
-            // Пытаемся воспроизвести. Современные браузеры могут требовать клика.
-            // LiveKit попытается сделать это сам, если аудио контекст уже разблокирован.
-            audioEl.play().catch(e => {
-                addDebugLog(`⚠️ Воспроизведение заблокировано браузером. Нужен клик. Ошибка: ${e.message}`);
-                updateStatus(`⚠️ Нажмите на экран, чтобы включить звук`, 'warning');
-                
-                // Добавляем одноразовый обработчик клика для активации звука
-                const clickToPlay = async () => {
-                    try {
-                        await room.startAudio(); // Используем метод LiveKit для надежного запуска
-                        addDebugLog("✅ Аудио контекст активирован после клика!");
-                        updateStatus(`🔊 Агент говорит!`, 'success');
-                    } catch (startAudioError) {
-                        addDebugLog(`❌ Не удалось запустить аудио после клика: ${startAudioError.message}`);
-                    }
-                    document.body.removeEventListener('click', clickToPlay);
-                };
-                document.body.addEventListener('click', clickToPlay);
-            });
-
-          } catch (attachError) {
-            addDebugLog(`❌ Ошибка прикрепления аудио: ${attachError.message}`);
-          }
+          const audioEl = track.attach();
+          audioContainer.appendChild(audioEl);
+          audioContainer.classList.add('active');
+          audioEl.play().catch(e => {
+            addDebugLog(`[AUTOPLAY] ⚠️ Воспроизведение заблокировано. Нужен клик.`);
+            updateStatus(`⚠️ Нажмите на экран, чтобы включить звук`, 'warning');
+            document.body.addEventListener('click', () => {
+                addDebugLog("[CLICK] Попытка запустить аудио после клика...");
+                room.startAudio();
+            }, { once: true });
+          });
         }
       });
       
-      room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-        addDebugLog(`👋 Отписка от трека: ${track.kind} от ${participant.identity}`);
-        track.detach().forEach(el => el.remove());
+      // Остальные обработчики
+      room.on(RoomEvent.TrackUnsubscribed, (track, pub, participant) => {
+          addDebugLog(`[EVENT] 👋 Отписка от трека: ${track.kind} от ${participant.identity}`);
+          track.detach().forEach(el => el.remove())
       });
-      
-      room.on(RoomEvent.ParticipantDisconnected, participant => {
-        addDebugLog(`❌ Участник отключился: ${participant.identity}`);
-        updateStatus(`👋 Отключился: ${participant.identity}`, 'warning');
-      });
-      
+      room.on(RoomEvent.ParticipantDisconnected, participant => addDebugLog(`[EVENT] ❌ Участник отключился: ${participant.identity}`));
       room.on(RoomEvent.Disconnected, () => {
-        addDebugLog("🔌 Отключено от комнаты");
-        updateStatus("❌ Отключено от комнаты", 'error');
+        addDebugLog("[EVENT] 🔌 Отключено от комнаты");
+        updateStatus("❌ Отключено", 'error');
         resetButtons();
       });
+      room.on(RoomEvent.AudioPlaybackStatusChanged, () => addDebugLog(`[EVENT] Статус аудио: ${room.canPlaybackAudio ? 'РАЗРЕШЕНО' : 'ЗАБЛОКИРОВАНО'}`));
       
-      room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
-        addDebugLog(`Статус воспроизведения аудио: ${room.canPlaybackAudio ? 'РАЗРЕШЕНО' : 'ЗАБЛОКИРОВАНО'}`);
-      });
-
-      // --- КОНЕЦ ПЕРЕДЕЛАННОГО БЛОКА ---
-      
-      // Подключение к комнате
+      // --- ПОДКЛЮЧЕНИЕ ---
       try {
+        addDebugLog("Попытка подключения к " + wsUrl);
         await room.connect(wsUrl, token);
-        addDebugLog(`✅ Подключено к комнате: ${roomName}`);
+        addDebugLog(`✅ УСПЕШНО ПОДКЛЮЧЕНО к комнате: ${roomName}`);
         updateStatus("✅ Подключено! Захват микрофона...", 'success');
+
+        // --- ВАЖНОЕ ИСПРАВЛЕНИЕ: Проверяем УЖЕ СУЩЕСТВУЮЩИХ участников ---
+        addDebugLog("Проверка уже присутствующих участников...");
+        if (room.remoteParticipants.size > 0) {
+            room.remoteParticipants.forEach(participant => {
+                addDebugLog(`Найден существующий участник: ${participant.identity}`);
+                setupParticipantListeners(participant); // Настраиваем слушатели и для них
+            });
+        } else {
+            addDebugLog("В комнате пока нет других участников.");
+        }
+        // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
       } catch (connectError) {
         addDebugLog(`❌ Ошибка подключения: ${connectError.message}`);
-        throw connectError;
+        updateStatus(`❌ Ошибка подключения: ${connectError.message}`, 'error');
+        resetButtons();
+        return; // Выходим из функции при ошибке
       }
       
-      // Запрос разрешения на микрофон и включение
+      // Активация микрофона
       try {
+        addDebugLog("Активация микрофона...");
         await room.localParticipant.setMicrophoneEnabled(true);
         addDebugLog("✅ Микрофон активирован");
         updateStatus("🎤 Микрофон активен. Ожидание агента...", 'success');
@@ -391,17 +371,8 @@
         addDebugLog(`⚠️ Ошибка микрофона: ${micError.message}`);
         updateStatus(`⚠️ Ошибка микрофона: ${micError.message}`, 'warning');
       }
-      
-      // Проверяем существующих участников
-      setTimeout(() => {
-        const participants = Array.from(room.remoteParticipants.values());
-        addDebugLog(`Current participants: ${participants.map(p => p.identity).join(', ') || 'none'}`);
-        
-        if (participants.length === 0) {
-          updateStatus("⏳ Агент ещё не подключился. Ожидание...", 'warning');
-        }
-      }, 2000);
     }
+    // --- КОНЕЦ ИСПРАВЛЕННОЙ ФУНКЦИИ ---
     
     function resetButtons() {
       startBtn.disabled = false;
@@ -411,6 +382,7 @@
       directBtn.style.display = 'block';
       startBtn.innerHTML = '<span class="mic-icon">🎤</span>Начать разговор';
       directBtn.innerHTML = '<span class="mic-icon">⚡</span>Прямое подключение';
+      audioContainer.innerHTML = ''; // Очищаем контейнер с аудио элементами
       audioContainer.classList.remove('active');
       currentRoom = null;
     }
@@ -432,22 +404,22 @@
           });
           
           const agentText = await agentResp.text();
-          addDebugLog(`Agent response: ${agentText.substring(0, 200)}`);
+          addDebugLog(`Ответ сервера (агент): ${agentText.substring(0, 200)}`);
           
           if (!agentResp.ok) {
-            addDebugLog('⚠️ Agent start failed, but continuing...');
-            updateStatus("⚠️ Не удалось запустить агента, пробуем подключиться...", 'warning');
+            addDebugLog('⚠️ Не удалось запустить агента, но продолжаем...');
+            updateStatus("⚠️ Ошибка запуска агента, пробуем подключиться...", 'warning');
           } else {
             const agentData = JSON.parse(agentText);
-            addDebugLog(`✅ Agent started: ${JSON.stringify(agentData)}`);
+            addDebugLog(`✅ Агент запущен: ${JSON.stringify(agentData)}`);
             updateStatus("✅ Агент запущен!", 'success');
           }
         } catch (agentError) {
-          addDebugLog(`⚠️ Agent start error: ${agentError.message}`);
-          updateStatus("⚠️ Ошибка запуска агента, пробуем прямое подключение...", 'warning');
+          addDebugLog(`⚠️ Критическая ошибка запуска агента: ${agentError.message}`);
+          updateStatus("⚠️ Критическая ошибка запуска агента, пробуем прямое подключение...", 'warning');
         }
         
-        // Задержка для инициализации агента
+        addDebugLog("Ожидание 3 секунды для инициализации агента...");
         await new Promise(resolve => setTimeout(resolve, 3000));
         
         // 2. Получаем токен
@@ -459,18 +431,18 @@
         
         if (!tokenResp.ok) {
           const errorText = await tokenResp.text();
-          addDebugLog(`❌ Token fetch failed: ${errorText}`);
+          addDebugLog(`❌ Ошибка получения токена: ${errorText}`);
           throw new Error(`Ошибка токена: ${errorText}`);
         }
         
         const tokenData = await tokenResp.json();
-        addDebugLog(`✅ Token received for: ${tokenData.identity}`);
+        addDebugLog(`✅ Токен получен для: ${tokenData.identity}`);
         
         // 3. Подключаемся
         await connectToRoom(tokenData.token, roomName);
         
       } catch (error) {
-        addDebugLog(`❌ Error: ${error.message}`);
+        addDebugLog(`❌ Глобальная ошибка: ${error.message}`);
         updateStatus(`❌ ОШИБКА: ${error.message}`, 'error');
         resetButtons();
       }
@@ -492,18 +464,18 @@
         
         if (!tokenResp.ok) {
           const errorText = await tokenResp.text();
-          addDebugLog(`❌ Token error: ${errorText}`);
+          addDebugLog(`❌ Ошибка получения токена: ${errorText}`);
           throw new Error(`Ошибка токена: ${errorText}`);
         }
         
         const tokenData = await tokenResp.json();
-        addDebugLog(`✅ Token received`);
+        addDebugLog(`✅ Токен получен`);
         
         // Подключаемся напрямую
         await connectToRoom(tokenData.token, roomName);
         
       } catch (error) {
-        addDebugLog(`❌ Error: ${error.message}`);
+        addDebugLog(`❌ Глобальная ошибка: ${error.message}`);
         updateStatus(`❌ ОШИБКА: ${error.message}`, 'error');
         resetButtons();
       }
@@ -513,7 +485,8 @@
       if (currentRoom) {
         addDebugLog("Отключение от комнаты...");
         currentRoom.disconnect();
-        updateStatus("🛑 Отключено", 'warning');
+      } else {
+        addDebugLog("Нечего отключать, комната не активна.");
         resetButtons();
       }
     }
@@ -521,18 +494,18 @@
     // Обработчики кнопок
     startBtn.onclick = () => {
       debugLog.innerHTML = '';
-      startWithAgent();
       startBtn.disabled = true;
       directBtn.disabled = true;
       startBtn.innerHTML = '<span class="loading"></span>Подключение...';
+      startWithAgent();
     };
     
     directBtn.onclick = () => {
       debugLog.innerHTML = '';
-      directConnect();
       startBtn.disabled = true;
       directBtn.disabled = true;
       directBtn.innerHTML = '<span class="loading"></span>Подключение...';
+      directConnect();
     };
     
     stopBtn.onclick = stopConnection;
