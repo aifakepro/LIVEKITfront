@@ -288,79 +288,85 @@
       
       currentRoom = room;
       
+// --- НАЧАЛО ПЕРЕДЕЛАННОГО БЛОКА ---
+
       // Обработчики событий ПЕРЕД подключением
-      room.on(RoomEvent.TrackSubscribed, async (track, publication, participant) => {
-        addDebugLog(`Track subscribed: ${track.kind} from ${participant.identity}`);
+      
+      // НОВЫЙ ОБРАБОТЧИК: Следим за качеством соединения (для диагностики "радиопомех")
+      room.on(RoomEvent.ParticipantConnected, participant => {
+        addDebugLog(`✅ Участник подключился: ${participant.identity}`);
+        
+        // Устанавливаем слушатель качества связи для этого участника
+        participant.on('connectionqualitychanged', (quality) => {
+          // Выводим в лог каждое изменение качества связи
+          const qualityMsg = `📡 Качество связи для ${participant.identity}: ${quality.toUpperCase()}`;
+          addDebugLog(qualityMsg);
+        });
+
+        if (participant.identity.includes('agent')) {
+          updateStatus(`🤖 Агент в комнате: ${participant.identity}`, 'success');
+        }
+      });
+
+      // СУЩЕСТВУЮЩИЙ ОБРАБОТЧИК: Подписка на медиа-треки
+      room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+        addDebugLog(`🎧 Подписка на трек: ${track.kind} от ${participant.identity}`);
         
         if (track.kind === 'audio') {
-          addDebugLog("Создание аудио элемента...");
-          
+          addDebugLog("Создание и прикрепление аудио элемента...");
           try {
-            const audioEl = track.attach();
-            audioEl.autoplay = true;
-            audioEl.playsInline = true;
-            audioEl.muted = false;
-            audioEl.volume = 1.0;
-            
-            // Принудительный запуск воспроизведения
-            audioEl.addEventListener('canplay', async () => {
-              addDebugLog("Audio can play, запуск...");
-              try {
-                await audioEl.play();
-                addDebugLog("✅ Аудио воспроизводится!");
-                updateStatus(`🔊 Агент говорит! (${participant.identity})`, 'success');
-              } catch (playError) {
-                addDebugLog(`⚠️ Ошибка play(): ${playError.message}`);
-                updateStatus(`⚠️ Нажмите на экран для активации звука`, 'warning');
-                
-                // Повторная попытка при клике
-                document.body.addEventListener('click', async () => {
-                  try {
-                    await audioEl.play();
-                    addDebugLog("✅ Аудио запущено после клика");
-                    updateStatus(`🔊 Агент говорит!`, 'success');
-                  } catch (e) {
-                    addDebugLog(`❌ Не удалось запустить: ${e.message}`);
-                  }
-                }, { once: true });
-              }
-            });
-            
+            const audioEl = track.attach(); // attach() создает и возвращает <audio> элемент
             audioContainer.appendChild(audioEl);
             audioContainer.classList.add('active');
+            updateStatus(`🔊 Слышу агента: ${participant.identity}`, 'success');
             
+            // Пытаемся воспроизвести. Современные браузеры могут требовать клика.
+            // LiveKit попытается сделать это сам, если аудио контекст уже разблокирован.
+            audioEl.play().catch(e => {
+                addDebugLog(`⚠️ Воспроизведение заблокировано браузером. Нужен клик. Ошибка: ${e.message}`);
+                updateStatus(`⚠️ Нажмите на экран, чтобы включить звук`, 'warning');
+                
+                // Добавляем одноразовый обработчик клика для активации звука
+                const clickToPlay = async () => {
+                    try {
+                        await room.startAudio(); // Используем метод LiveKit для надежного запуска
+                        addDebugLog("✅ Аудио контекст активирован после клика!");
+                        updateStatus(`🔊 Агент говорит!`, 'success');
+                    } catch (startAudioError) {
+                        addDebugLog(`❌ Не удалось запустить аудио после клика: ${startAudioError.message}`);
+                    }
+                    document.body.removeEventListener('click', clickToPlay);
+                };
+                document.body.addEventListener('click', clickToPlay);
+            });
+
           } catch (attachError) {
-            addDebugLog(`❌ Ошибка attach: ${attachError.message}`);
+            addDebugLog(`❌ Ошибка прикрепления аудио: ${attachError.message}`);
           }
         }
       });
       
       room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-        addDebugLog(`Track unsubscribed: ${track.kind} from ${participant.identity}`);
+        addDebugLog(`👋 Отписка от трека: ${track.kind} от ${participant.identity}`);
         track.detach().forEach(el => el.remove());
       });
       
-      room.on(RoomEvent.ParticipantConnected, participant => {
-        addDebugLog(`Participant connected: ${participant.identity}`);
-        if (participant.identity.includes('agent')) {
-          updateStatus(`🤖 Агент подключился: ${participant.identity}`, 'success');
-        }
-      });
-      
       room.on(RoomEvent.ParticipantDisconnected, participant => {
-        addDebugLog(`Participant disconnected: ${participant.identity}`);
+        addDebugLog(`❌ Участник отключился: ${participant.identity}`);
         updateStatus(`👋 Отключился: ${participant.identity}`, 'warning');
       });
       
       room.on(RoomEvent.Disconnected, () => {
-        addDebugLog("Disconnected from room");
+        addDebugLog("🔌 Отключено от комнаты");
         updateStatus("❌ Отключено от комнаты", 'error');
         resetButtons();
       });
       
       room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
-        addDebugLog(`Audio playback: ${room.canPlaybackAudio ? 'enabled' : 'disabled'}`);
+        addDebugLog(`Статус воспроизведения аудио: ${room.canPlaybackAudio ? 'РАЗРЕШЕНО' : 'ЗАБЛОКИРОВАНО'}`);
       });
+
+      // --- КОНЕЦ ПЕРЕДЕЛАННОГО БЛОКА ---
       
       // Подключение к комнате
       try {
