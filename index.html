@@ -7,53 +7,94 @@
     body { font-family: sans-serif; padding: 20px; background: #f0f0f0; }
     #audio-container audio { display: block; margin: 10px 0; width: 100%; }
     button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin-bottom: 20px; }
+    #status { margin: 10px 0; padding: 10px; background: #fff; border-radius: 5px; }
   </style>
 </head>
 <body>
   <h1>LiveKit StopAIFake</h1>
   <button id="start-btn">Начать микрофон</button>
+  <div id="status">Статус: Ожидание...</div>
   <div id="audio-container"></div>
-
+  
   <script type="module">
     import { connect, createLocalAudioTrack } from 'https://cdn.jsdelivr.net/npm/livekit-client@1.7.4/dist/livekit-client.mjs';
-
+    
+    const statusEl = document.getElementById('status');
+    
     async function start() {
       try {
-        // Получаем токен с вашего сервера
-        const resp = await fetch("https://liveki-tserver.vercel.app/api/token?room=StopAIFake", { method: "POST" });
-        const data = await resp.json();
-        const token = data.token;
-
+        const roomName = "StopAIFake";
+        
+        // 1. Запускаем агента
+        statusEl.textContent = "Статус: Запуск агента...";
+        const agentResp = await fetch(`https://liveki-tserver.vercel.app/api/start-agent?room=${roomName}`, { 
+          method: "POST" 
+        });
+        const agentData = await agentResp.json();
+        console.log('Agent started:', agentData);
+        
+        // Небольшая задержка для инициализации агента
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // 2. Получаем токен для клиента
+        statusEl.textContent = "Статус: Получение токена...";
+        const tokenResp = await fetch(`https://liveki-tserver.vercel.app/api/token?room=${roomName}`, { 
+          method: "POST" 
+        });
+        const tokenData = await tokenResp.json();
+        const token = tokenData.token;
+        
         const url = "wss://stopaifake-07gwd6vp.livekit.cloud";
-
-        // Подключаемся к комнате без автопубликации
-        const room = await connect(url, token, { audio: false, video: false });
-
-        // Захват микрофона и публикация
+        
+        // 3. Подключаемся к комнате
+        statusEl.textContent = "Статус: Подключение к комнате...";
+        const room = await connect(url, token, { 
+          audio: false, 
+          video: false 
+        });
+        
+        statusEl.textContent = "Статус: Подключено! Захват микрофона...";
+        
+        // 4. Захват микрофона и публикация
         const localAudio = await createLocalAudioTrack();
         await room.localParticipant.publishTrack(localAudio);
-
-        // Воспроизведение аудио участников (агента)
-        room.on('trackSubscribed', (track, participant) => {
+        
+        statusEl.textContent = "Статус: Микрофон активен. Ожидание агента...";
+        
+        // 5. Воспроизведение аудио участников (агента)
+        room.on('trackSubscribed', (track, publication, participant) => {
           if(track.kind === 'audio') {
             const audioEl = track.attach();
             audioEl.autoplay = true;
             audioEl.playsInline = true;
             document.getElementById('audio-container').appendChild(audioEl);
+            statusEl.textContent = `Статус: Агент подключен! (${participant.identity})`;
             console.log('Audio subscribed from', participant.identity);
           }
         });
-
-        room.on('participantConnected', p => console.log('Participant connected:', p.identity));
-        room.on('participantDisconnected', p => console.log('Participant disconnected:', p.identity));
-        room.on('disconnected', () => console.log('Disconnected from room'));
-
+        
+        room.on('participantConnected', p => {
+          console.log('Participant connected:', p.identity);
+          statusEl.textContent = `Статус: Участник подключился: ${p.identity}`;
+        });
+        
+        room.on('participantDisconnected', p => {
+          console.log('Participant disconnected:', p.identity);
+          statusEl.textContent = `Статус: Участник отключился: ${p.identity}`;
+        });
+        
+        room.on('disconnected', () => {
+          console.log('Disconnected from room');
+          statusEl.textContent = "Статус: Отключено от комнаты";
+        });
+        
       } catch (e) {
         console.error('Error starting LiveKit connection:', e);
+        statusEl.textContent = `Статус: ОШИБКА - ${e.message}`;
         alert('Ошибка запуска: ' + e.message);
       }
     }
-
+    
     // Запуск по кнопке
     document.getElementById('start-btn').onclick = () => {
       start();
@@ -62,4 +103,3 @@
   </script>
 </body>
 </html>
-
