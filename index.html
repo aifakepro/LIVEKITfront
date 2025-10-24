@@ -84,6 +84,10 @@
       box-shadow: 0 6px 20px rgba(245, 87, 108, 0.6);
     }
     
+    button.stop {
+      background: linear-gradient(135deg, #ee0979 0%, #ff6a00 100%);
+    }
+    
     #status { 
       margin: 20px 0; 
       padding: 15px; 
@@ -102,6 +106,15 @@
     
     #audio-container {
       margin-top: 20px;
+      padding: 15px;
+      background: #f0f0f0;
+      border-radius: 10px;
+      min-height: 60px;
+      display: none;
+    }
+    
+    #audio-container.active {
+      display: block;
     }
     
     #audio-container audio { 
@@ -173,6 +186,18 @@
       display: block;
       margin-bottom: 5px;
     }
+
+    .debug-info {
+      background: #f5f5f5;
+      padding: 10px;
+      border-radius: 5px;
+      margin-top: 10px;
+      font-size: 11px;
+      font-family: monospace;
+      color: #666;
+      max-height: 200px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -191,6 +216,11 @@
       </button>
     </div>
     
+    <button id="stop-btn" class="stop" style="display: none; width: 100%; margin-bottom: 20px;">
+      <span class="mic-icon">⏹️</span>
+      Остановить
+    </button>
+    
     <div id="status">
       <div class="status-label">Статус:</div>
       <div id="status-text">Выберите способ подключения</div>
@@ -203,15 +233,29 @@
     </div>
     
     <div id="audio-container"></div>
+    
+    <div class="debug-info" id="debug-log"></div>
   </div>
   
   <script type="module">
-    import { Room, RoomEvent } from 'https://cdn.jsdelivr.net/npm/livekit-client@2.0.0/+esm';
+    import { Room, RoomEvent } from 'https://cdn.jsdelivr.net/npm/livekit-client@2.5.2/+esm';
     
     const statusEl = document.getElementById('status');
     const statusTextEl = document.getElementById('status-text');
     const startBtn = document.getElementById('start-btn');
     const directBtn = document.getElementById('direct-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const audioContainer = document.getElementById('audio-container');
+    const debugLog = document.getElementById('debug-log');
+    
+    let currentRoom = null;
+    
+    function addDebugLog(message) {
+      const timestamp = new Date().toLocaleTimeString();
+      debugLog.innerHTML += `[${timestamp}] ${message}<br>`;
+      debugLog.scrollTop = debugLog.scrollHeight;
+      console.log(message);
+    }
     
     function updateStatus(text, type = 'info') {
       statusTextEl.innerHTML = text;
@@ -228,55 +272,124 @@
       const wsUrl = "wss://stopaifake-07gwd6vp.livekit.cloud";
       
       showLoading("Подключение к комнате...");
-      const room = new Room();
+      addDebugLog("Создание комнаты...");
       
-      await room.connect(wsUrl, token);
-      
-      updateStatus("✅ Подключено! Захват микрофона...", 'success');
-      
-      // Захват микрофона
-      await room.localParticipant.setMicrophoneEnabled(true);
-      
-      updateStatus("🎤 Микрофон активен. Ожидание агента...", 'success');
-      
-      // События комнаты
-      room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-        console.log('Track subscribed:', track.kind, 'from', participant.identity);
-        
-        if (track.kind === 'audio') {
-          const audioEl = track.attach();
-          audioEl.autoplay = true;
-          audioEl.playsInline = true;
-          document.getElementById('audio-container').appendChild(audioEl);
-          updateStatus(`🤖 Агент готов! Говорите... (${participant.identity})`, 'success');
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+        videoCaptureDefaults: {
+          resolution: {
+            width: 640,
+            height: 480,
+            frameRate: 30,
+          }
         }
       });
       
+      currentRoom = room;
+      
+      // Обработчики событий ПЕРЕД подключением
+      room.on(RoomEvent.TrackSubscribed, async (track, publication, participant) => {
+        addDebugLog(`Track subscribed: ${track.kind} from ${participant.identity}`);
+        
+        if (track.kind === 'audio') {
+          addDebugLog("Создание аудио элемента...");
+          
+          try {
+            const audioEl = track.attach();
+            audioEl.autoplay = true;
+            audioEl.playsInline = true;
+            audioEl.muted = false;
+            audioEl.volume = 1.0;
+            
+            // Принудительный запуск воспроизведения
+            audioEl.addEventListener('canplay', async () => {
+              addDebugLog("Audio can play, запуск...");
+              try {
+                await audioEl.play();
+                addDebugLog("✅ Аудио воспроизводится!");
+                updateStatus(`🔊 Агент говорит! (${participant.identity})`, 'success');
+              } catch (playError) {
+                addDebugLog(`⚠️ Ошибка play(): ${playError.message}`);
+                updateStatus(`⚠️ Нажмите на экран для активации звука`, 'warning');
+                
+                // Повторная попытка при клике
+                document.body.addEventListener('click', async () => {
+                  try {
+                    await audioEl.play();
+                    addDebugLog("✅ Аудио запущено после клика");
+                    updateStatus(`🔊 Агент говорит!`, 'success');
+                  } catch (e) {
+                    addDebugLog(`❌ Не удалось запустить: ${e.message}`);
+                  }
+                }, { once: true });
+              }
+            });
+            
+            audioContainer.appendChild(audioEl);
+            audioContainer.classList.add('active');
+            
+          } catch (attachError) {
+            addDebugLog(`❌ Ошибка attach: ${attachError.message}`);
+          }
+        }
+      });
+      
+      room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+        addDebugLog(`Track unsubscribed: ${track.kind} from ${participant.identity}`);
+        track.detach().forEach(el => el.remove());
+      });
+      
       room.on(RoomEvent.ParticipantConnected, participant => {
-        console.log('Participant connected:', participant.identity);
+        addDebugLog(`Participant connected: ${participant.identity}`);
         if (participant.identity.includes('agent')) {
           updateStatus(`🤖 Агент подключился: ${participant.identity}`, 'success');
         }
       });
       
       room.on(RoomEvent.ParticipantDisconnected, participant => {
-        console.log('Participant disconnected:', participant.identity);
+        addDebugLog(`Participant disconnected: ${participant.identity}`);
         updateStatus(`👋 Отключился: ${participant.identity}`, 'warning');
       });
       
       room.on(RoomEvent.Disconnected, () => {
-        console.log('Disconnected from room');
+        addDebugLog("Disconnected from room");
         updateStatus("❌ Отключено от комнаты", 'error');
-        startBtn.disabled = false;
-        directBtn.disabled = false;
-        startBtn.innerHTML = '<span class="mic-icon">🎤</span>Начать разговор';
-        directBtn.innerHTML = '<span class="mic-icon">⚡</span>Прямое подключение';
+        resetButtons();
       });
       
-      // Проверяем, есть ли уже участники в комнате
+      room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+        addDebugLog(`Audio playback: ${room.canPlaybackAudio ? 'enabled' : 'disabled'}`);
+      });
+      
+      // Подключение к комнате
+      try {
+        await room.connect(wsUrl, token);
+        addDebugLog(`✅ Подключено к комнате: ${roomName}`);
+        updateStatus("✅ Подключено! Захват микрофона...", 'success');
+      } catch (connectError) {
+        addDebugLog(`❌ Ошибка подключения: ${connectError.message}`);
+        throw connectError;
+      }
+      
+      // Запрос разрешения на микрофон и включение
+      try {
+        await room.localParticipant.setMicrophoneEnabled(true);
+        addDebugLog("✅ Микрофон активирован");
+        updateStatus("🎤 Микрофон активен. Ожидание агента...", 'success');
+        
+        stopBtn.style.display = 'block';
+        startBtn.style.display = 'none';
+        directBtn.style.display = 'none';
+      } catch (micError) {
+        addDebugLog(`⚠️ Ошибка микрофона: ${micError.message}`);
+        updateStatus(`⚠️ Ошибка микрофона: ${micError.message}`, 'warning');
+      }
+      
+      // Проверяем существующих участников
       setTimeout(() => {
         const participants = Array.from(room.remoteParticipants.values());
-        console.log('Current participants:', participants.map(p => p.identity));
+        addDebugLog(`Current participants: ${participants.map(p => p.identity).join(', ') || 'none'}`);
         
         if (participants.length === 0) {
           updateStatus("⏳ Агент ещё не подключился. Ожидание...", 'warning');
@@ -284,10 +397,24 @@
       }, 2000);
     }
     
+    function resetButtons() {
+      startBtn.disabled = false;
+      directBtn.disabled = false;
+      stopBtn.style.display = 'none';
+      startBtn.style.display = 'block';
+      directBtn.style.display = 'block';
+      startBtn.innerHTML = '<span class="mic-icon">🎤</span>Начать разговор';
+      directBtn.innerHTML = '<span class="mic-icon">⚡</span>Прямое подключение';
+      audioContainer.classList.remove('active');
+      currentRoom = null;
+    }
+    
     async function startWithAgent() {
       try {
         const roomName = "StopAIFake";
         const serverUrl = "https://liveki-tserver.vercel.app";
+        
+        addDebugLog("=== Запуск с агентом ===");
         
         // 1. Запускаем агента
         showLoading("Запуск голосового агента...");
@@ -299,18 +426,18 @@
           });
           
           const agentText = await agentResp.text();
-          console.log('Agent response:', agentText);
+          addDebugLog(`Agent response: ${agentText.substring(0, 200)}`);
           
           if (!agentResp.ok) {
-            console.warn('Agent start failed, but continuing...', agentText);
+            addDebugLog('⚠️ Agent start failed, but continuing...');
             updateStatus("⚠️ Не удалось запустить агента, пробуем подключиться...", 'warning');
           } else {
             const agentData = JSON.parse(agentText);
-            console.log('Agent started:', agentData);
+            addDebugLog(`✅ Agent started: ${JSON.stringify(agentData)}`);
             updateStatus("✅ Агент запущен!", 'success');
           }
         } catch (agentError) {
-          console.warn('Agent start error:', agentError);
+          addDebugLog(`⚠️ Agent start error: ${agentError.message}`);
           updateStatus("⚠️ Ошибка запуска агента, пробуем прямое подключение...", 'warning');
         }
         
@@ -326,23 +453,20 @@
         
         if (!tokenResp.ok) {
           const errorText = await tokenResp.text();
-          console.error('Token fetch failed:', errorText);
+          addDebugLog(`❌ Token fetch failed: ${errorText}`);
           throw new Error(`Ошибка токена: ${errorText}`);
         }
         
         const tokenData = await tokenResp.json();
-        console.log('Token received:', { room: tokenData.room, identity: tokenData.identity });
+        addDebugLog(`✅ Token received for: ${tokenData.identity}`);
         
         // 3. Подключаемся
         await connectToRoom(tokenData.token, roomName);
         
       } catch (error) {
-        console.error('Error:', error);
+        addDebugLog(`❌ Error: ${error.message}`);
         updateStatus(`❌ ОШИБКА: ${error.message}`, 'error');
-        startBtn.disabled = false;
-        directBtn.disabled = false;
-        startBtn.innerHTML = '<span class="mic-icon">🎤</span>Попробовать снова';
-        directBtn.innerHTML = '<span class="mic-icon">⚡</span>Прямое подключение';
+        resetButtons();
       }
     }
     
@@ -350,6 +474,8 @@
       try {
         const roomName = "StopAIFake";
         const serverUrl = "https://liveki-tserver.vercel.app";
+        
+        addDebugLog("=== Прямое подключение ===");
         
         // Только получаем токен
         showLoading("Получение токена доступа...");
@@ -360,25 +486,35 @@
         
         if (!tokenResp.ok) {
           const errorText = await tokenResp.text();
+          addDebugLog(`❌ Token error: ${errorText}`);
           throw new Error(`Ошибка токена: ${errorText}`);
         }
         
         const tokenData = await tokenResp.json();
-        console.log('Token received');
+        addDebugLog(`✅ Token received`);
         
         // Подключаемся напрямую
         await connectToRoom(tokenData.token, roomName);
         
       } catch (error) {
-        console.error('Error:', error);
+        addDebugLog(`❌ Error: ${error.message}`);
         updateStatus(`❌ ОШИБКА: ${error.message}`, 'error');
-        startBtn.disabled = false;
-        directBtn.disabled = false;
+        resetButtons();
+      }
+    }
+    
+    function stopConnection() {
+      if (currentRoom) {
+        addDebugLog("Отключение от комнаты...");
+        currentRoom.disconnect();
+        updateStatus("🛑 Отключено", 'warning');
+        resetButtons();
       }
     }
     
     // Обработчики кнопок
     startBtn.onclick = () => {
+      debugLog.innerHTML = '';
       startWithAgent();
       startBtn.disabled = true;
       directBtn.disabled = true;
@@ -386,11 +522,16 @@
     };
     
     directBtn.onclick = () => {
+      debugLog.innerHTML = '';
       directConnect();
       startBtn.disabled = true;
       directBtn.disabled = true;
       directBtn.innerHTML = '<span class="loading"></span>Подключение...';
     };
+    
+    stopBtn.onclick = stopConnection;
+    
+    addDebugLog("Приложение загружено");
   </script>
 </body>
 </html>
